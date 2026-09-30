@@ -111,8 +111,20 @@ def ensure_show(code, start_date=None, end_date=None):
         return show
 
 
-def init_db():
-    Base.metadata.create_all(engine)
+def init_db(attempts=12, wait=5):
+    # On a first deploy the database can still be provisioning when the app boots,
+    # so retry for up to a minute before giving up.
+    import time
+    from sqlalchemy.exc import OperationalError
+    for i in range(attempts):
+        try:
+            Base.metadata.create_all(engine)
+            break
+        except OperationalError as exc:
+            if i == attempts - 1:
+                raise
+            print(f"Database not reachable yet ({exc.orig}); retrying in {wait}s")
+            time.sleep(wait)
     with Session(engine) as s:
         existing = set(s.scalars(select(Show.code)))
         for show in DEFAULT_SHOWS:
