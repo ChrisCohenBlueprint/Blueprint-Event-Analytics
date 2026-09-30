@@ -94,6 +94,23 @@ DEFAULT_SHOWS = [
 ]
 
 
+def ensure_show(code, start_date=None, end_date=None):
+    """Return the show, creating it from its code (e.g. LEX27) if it doesn't exist yet."""
+    from .dictionary import BRANDS, parse_show_code
+    code = code.strip().upper()
+    with SessionLocal() as s:
+        show = s.get(Show, code)
+        if show:
+            return show
+        brand, year = parse_show_code(code)
+        name, region = BRANDS.get(brand, (brand, "Other"))
+        show = Show(code=code, brand=brand, name=f"{name} {year}", region=region, year=year,
+                    start_date=start_date, end_date=end_date, previous_code=f"{brand}{(year - 1) % 100:02d}")
+        s.add(show)
+        s.commit()
+        return show
+
+
 def init_db():
     Base.metadata.create_all(engine)
     with Session(engine) as s:

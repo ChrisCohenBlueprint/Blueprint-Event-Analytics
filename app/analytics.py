@@ -2,7 +2,7 @@
 from datetime import timedelta
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import dictionary as d
@@ -79,10 +79,19 @@ def explode(series):
 
 
 # ---------------------------------------------------------------------------
+def _data_stamp():
+    # Changes whenever any feed (upload, cron sync, API push) writes data - including from
+    # another process such as the Render cron job - so cached summaries never go stale.
+    with Session(engine) as s:
+        return s.scalar(select(func.max(IngestRun.id))) or 0
+
+
 def summary(show_code, segment="attendees"):
-    key = (show_code, segment)
+    key = (show_code, segment, _data_stamp())
     if key in _cache:
         return _cache[key]
+    if len(_cache) > 200:
+        _cache.clear()
     with Session(engine) as s:
         show = s.get(Show, show_code)
         last_run = s.scalars(select(IngestRun).where(IngestRun.show_code == show_code)
@@ -106,10 +115,21 @@ def summary(show_code, segment="attendees"):
         _cache[key] = out
         return out
 
+    # Earlier editions of the same show: returning visitors, pacing and lapsed audience
+    prev_show, prev_full, earlier_emails, earlier_codes = previous_editions(show)
+    meta["previous_code"] = prev_show.code if prev_show is not None else None
+    meta["returning_basis"] = None
+    if full.previous_attendee.isna().all() and earlier_emails:
+        full["previous_attendee"] = full.email.isin(earlier_emails).where(full.email.notna())
+        meta["returning_basis"] = "Registered for an earlier edition (" + ", ".join(earlier_codes) + "), matched on email"
+    elif full.previous_attendee.notna().any():
+        meta["returning_basis"] = "From the previous-attendee field in the export"
+
     f = SEGMENTS[segment][1](full)
     n = len(f)
     attendees = full[full.category == "Attendee"]
     exhibitors = full[full.category == "Exhibitor"]
+    prev_f = SEGMENTS[segment][1](prev_full) if prev_full is not None else None
 
     out = {
         "meta": meta,
@@ -122,11 +142,88 @@ def summary(show_code, segment="attendees"):
         "journey": journey(f),
         "gaps": gaps(f, show),
         "coverage": coverage(f),
+        "pacing": pacing(f, show, prev_f, prev_show) if prev_f is not None and len(prev_f) else None,
+        "lapsed": lapsed(full, prev_f, prev_show) if prev_f is not None and len(prev_f) else None,
     }
     out["meta"]["segment_n"] = n
     out["meta"]["latest_registration"] = f.created_at.max().isoformat() if n else None
     _cache[key] = out
     return out
+
+
+def previous_editions(show):
+    """(previous show, its frame, emails from all earlier editions, their codes) for the same brand."""
+    with Session(engine) as s:
+        earlier = list(s.scalars(select(Show).where(Show.brand == show.brand, Show.year < show.year)
+                                 .order_by(Show.year.desc())))
+    prev_show, prev_full, emails, codes = None, None, set(), []
+    for e in earlier:
+        frame = load_frame(e.code)
+        if frame.empty:
+            continue
+        codes.append(e.code)
+        emails |= set(frame.loc[frame.category == "Attendee", "email"].dropna())
+        if prev_show is None:
+            prev_show, prev_full = e, frame
+    return prev_show, prev_full, emails, codes
+
+
+def _start_of(frame, show):
+    if show.start_date:
+        return pd.Timestamp(show.start_date)
+    return frame.day.max() + timedelta(days=1)
+
+
+def pacing(f, show, prev_f, prev_show):
+    """Cumulative registrations by days before opening, this edition vs the previous one."""
+    if f.day.isna().all() or prev_f.day.isna().all():
+        return None
+    start, pstart = _start_of(f, show), _start_of(prev_f, prev_show)
+    cur_out = (start - f.day).dt.days
+    prev_out = (pstart - prev_f.day).dt.days
+    horizon = int(max(cur_out.max(), prev_out.max()))
+    end = -int(max(0, (pd.Timestamp(show.end_date) - start).days if show.end_date else 2)) - 1
+    xs = list(range(horizon, end - 1, -1))
+
+    def cum(out):
+        counts = out.value_counts()
+        total, series = 0, []
+        for x in xs:
+            total += int(counts.get(x, 0))
+            series.append(total)
+        return series
+
+    cur, prev = cum(cur_out), cum(prev_out)
+    latest_out = int(cur_out.min())
+    # Only draw this edition up to its latest registration (the future hasn't happened yet)
+    cur = [v if x >= latest_out else None for x, v in zip(xs, cur)]
+    idx = xs.index(latest_out) if latest_out in xs else len(xs) - 1
+    prev_same = prev[idx]
+    return {
+        "days_out": xs,
+        "current": cur, "previous": prev,
+        "current_code": show.code, "previous_code": prev_show.code,
+        "latest_days_out": latest_out,
+        "current_total": len(f), "previous_same_point": prev_same, "previous_final": prev[-1],
+        "vs_previous_pct": round(100.0 * (len(f) - prev_same) / prev_same, 1) if prev_same else None,
+    }
+
+
+def lapsed(full, prev_f, prev_show):
+    """People who registered for the previous edition but not (yet) for this one."""
+    current = set(full.email.dropna())
+    prev = prev_f[prev_f.email.notna()]
+    lost = prev[~prev.email.isin(current)]
+    k = len(lost)
+    return {
+        "previous_code": prev_show.code,
+        "previous_total": len(prev), "n": k, "pct": pct(k, len(prev)),
+        "retained": len(prev) - k, "retained_pct": pct(len(prev) - k, len(prev)),
+        "countries": dist(lost.country, k, top=10),
+        "seniority": dist(lost.seniority, k, order=d.SENIORITY_ORDER),
+        "job_function": dist(lost.job_function, k, top=8),
+        "companies": dist(lost.company.map(lambda c: c if isinstance(c, str) else None), k, top=12),
+    }
 
 
 def mix(full, attendees, exhibitors):
@@ -176,7 +273,7 @@ def audience(f):
         "budget_responsibility": dist(f.budget_responsibility, n, order=["Yes", "Influence", "No"]),
         "products": dist(explode(f.products), n, top=18),
         "top_job_titles": dist(f.job_title.map(nice_title), n, top=15),
-        "new_vs_returning": (dist(f.previous_attendee.map({True: "Returning", False: "New"}), n)
+        "new_vs_returning": (dist(f.previous_attendee.map({True: "Returning", False: "New to the show"}), n)
                              if f.previous_attendee.notna().any() else None),
         "companies": {
             "total": int(f.company.dropna().map(d.company_key).nunique()),
@@ -436,11 +533,39 @@ def coverage(f):
     return rows
 
 
+def _latest_per_region(shows):
+    """Latest edition with data for each region (or the latest edition if none has data)."""
+    have = {code for (code,) in Session(engine).execute(select(Registration.show_code).distinct())}
+    best = {}
+    for sh in sorted(shows, key=lambda r: -r.year):
+        cur = best.get(sh.region)
+        if cur is None or (sh.code in have and cur.code not in have):
+            best[sh.region] = sh
+    return sorted(best.values(), key=lambda r: d.REGION_ORDER.get(r.region, 9))
+
+
+def history(segment="attendees"):
+    """Year-over-year headline measures for every brand with data."""
+    with Session(engine) as s:
+        shows = list(s.scalars(select(Show).order_by(Show.year)))
+    out = {}
+    for show in shows:
+        sm = summary(show.code, segment)
+        if not sm["meta"]["has_data"]:
+            continue
+        k, b = sm["kpis"], sm.get("behaviour") or {}
+        out.setdefault(show.brand, {"brand": show.brand, "region": show.region, "editions": []})["editions"].append({
+            "code": show.code, "year": show.year, "total": k["total"], "countries": k["countries"],
+            "senior_pct": k["senior_pct"], "buying_power_pct": k["buying_power_pct"], "buyers_pct": k["buyers_pct"],
+            "international_pct": round(100 - k["top_country_pct"], 1), "returning_pct": k["returning_pct"],
+            "final7_pct": next((w["pct"] for w in b.get("windows", []) if w["label"] == "Final 7 days"), None),
+        })
+    return sorted(out.values(), key=lambda r: d.REGION_ORDER.get(r["region"], 9))
+
+
 def compare(segment="attendees"):
     with Session(engine) as s:
-        shows = list(s.scalars(select(Show)))
-    region_order = {"Europe": 0, "North America": 1, "Middle East": 2}
-    shows.sort(key=lambda r: (region_order.get(r.region, 9), -r.year))
+        shows = _latest_per_region(list(s.scalars(select(Show))))
     out = []
     for show in shows:
         sm = summary(show.code, segment)

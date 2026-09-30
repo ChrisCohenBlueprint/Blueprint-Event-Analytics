@@ -187,15 +187,16 @@
     const byRegion = {};
     state.shows.forEach(s => { (byRegion[s.region] ||= []).push(s); });
     $("#regions").innerHTML = Object.entries(byRegion).map(([region, list]) => {
-      const s = list[0];
-      return `<button data-show="${s.code}" class="${state.show?.code === s.code ? "active" : ""}">
-        <span class="dot ${s.records ? "live" : ""}"></span>${esc(region)}</button>`;
+      const s = list.find(x => x.records) || list[0];
+      return `<button data-show="${s.code}" class="${state.show?.region === region ? "active" : ""}">
+        <span class="dot ${list.some(x => x.records) ? "live" : ""}"></span>${esc(region)}</button>`;
     }).join("");
     $$("#regions button").forEach(b => b.onclick = () => selectShow(b.dataset.show));
   }
 
   function renderHero() {
     const d = state.data, m = d.meta, s = state.show;
+    const editions = state.shows.filter(x => x.region === s.region).sort((a, b) => a.year - b.year);
     const dates = s.start_date ? `${dateFmt(s.start_date)}${s.end_date && s.end_date !== s.start_date ? " – " + dateFmt(s.end_date) : ""}` : "Show dates not set";
     let kpis = "";
     if (m.has_data) {
@@ -220,10 +221,13 @@
           <div class="hero-meta"><span>${dates}</span>
             ${m.has_data ? `<span class="live-pill">Updated ${ago(m.last_ingest)}</span><span>Latest registration ${dateFmt(m.latest_registration?.slice(0, 10))}</span>` : `<span>No registration data yet</span>`}</div>
         </div>
+        ${editions.length > 1 ? `<div><div class="seg-label">Edition</div><div class="segments">${editions.map(e =>
+          `<button data-edition="${e.code}" class="${e.code === s.code ? "active" : ""}">${e.year}${e.records ? "" : " ·  no data"}</button>`).join("")}</div></div>` : ""}
         ${m.has_data ? `<div><div class="seg-label">Audience segment</div><div class="segments">${m.segments.map(g =>
           `<button data-seg="${g.key}" class="${g.key === m.segment ? "active" : ""}">${g.label}</button>`).join("")}</div></div>` : ""}
       </div>${kpis}</div>`;
     $$("#hero [data-seg]").forEach(b => b.onclick = () => { state.segment = b.dataset.seg; load(); });
+    $$("#hero [data-edition]").forEach(b => b.onclick = () => selectShow(b.dataset.edition));
     $("#footMeta").textContent = m.last_source ? `Source: ${m.last_source}` : "";
   }
 
@@ -308,7 +312,8 @@
       ${card({ cls: "c7", title: "Most common job titles", sub: "As typed at registration",
         body: tableHtml(a.top_job_titles, [{ key: "label", label: "Title" }, { key: "n", label: "People", bar: true }, { key: "pct", label: "Share", r: true, fmt: pc }]) })}
       <div class="c5 stack">
-      ${a.new_vs_returning ? card({ cls: "", title: "New vs returning", body: split(a.new_vs_returning), table: { rows: a.new_vs_returning } })
+      ${a.new_vs_returning ? card({ cls: "", title: "New vs returning", sub: esc(d.meta.returning_basis || ""), body: split(a.new_vs_returning, [css("--s1"), css("--s3")]), table: { rows: a.new_vs_returning },
+          insight: `${pc(a.new_vs_returning.find(x => x.label === "New to the show")?.pct)} are new to the show. Compare their profile with returners using the audience segments.` })
         : pendingCard({ cls: "", title: "New vs returning", text: "Needs the previous edition's attendee list or CRM history, matched on email. Once connected, this card splits the audience into first-timers and returners.", needs: ["CRM / LEX25 attendance"] })}
       ${pendingCard({ cls: "", title: "Company size", text: `Company size isn't captured on the registration form. ${fmt(a.companies.total)} companies are represented, averaging ${a.companies.avg_per_company} people each. Add an employee-band question, or enrich it from the CRM, to answer "are smaller specialist companies missing?"`, needs: ["Form question", "CRM enrichment"] })}
       </div>
@@ -348,8 +353,10 @@
     const f7 = b.windows.find(w => w.label === "First 7 days"), l7 = b.windows.find(w => w.label === "Final 7 days");
     const l3 = b.windows.find(w => w.label === "Final 3 days"), l30 = b.windows.find(w => w.label === "Final 30 days");
 
+    const pace = d.pacing ? pacingCard(d.pacing) : pendingCard({ cls: "c12", title: "Pacing vs last year", text: "When the previous edition's registrations are loaded, this chart shows whether this year is ahead of or behind last year at the same number of days before opening. It's the key live question during a campaign.", needs: ["Previous edition export"] });
     return intro("Customer behaviour", `When people decide to come, and how early deciders differ from late ones. The registration cycle ran ${fmt(b.cycle_days)} days, from ${dateFmt(b.first_registration)} to the ${b.show_start_inferred ? "estimated" : ""} show opening on ${dateFmt(b.show_start)}.`)
     + `<div class="grid">
+      ${pace}
       ${card({ cls: "c12", title: "Registration build-up", sub: "Cumulative registrations over time",
         body: `<div class="stat-row" style="margin-bottom:16px">
           <div class="stat"><b>${dateFmt(b.half_registered_by)}</b><span>Date half the audience had registered</span></div>
@@ -377,9 +384,45 @@
       ${card({ cls: "c12", title: "Where early and late deciders behave differently", sub: "Each cohort's profile, compared with the audience overall. Blue is above average, red below.",
         body: cohortTable(b), insight: cohortInsight(b) })}
 
-      ${pendingCard({ cls: "c6", title: "Returning behaviour", text: "Attended last year, didn't attend last year, registered but didn't attend, new to the show, returned to the show.", needs: ["Previous-edition attendance", "Badge scans"] })}
+      ${d.audience.new_vs_returning ? card({ cls: "c6", title: "Returning behaviour", sub: esc(d.meta.returning_basis || ""),
+          body: split(d.audience.new_vs_returning, [css("--s1"), css("--s3")]) + (d.lapsed ? `<div class="stat-row" style="grid-template-columns:1fr 1fr;margin-top:14px">
+            <div class="stat"><b>${pc(d.lapsed.retained_pct)}</b><span>of ${esc(d.lapsed.previous_code)} came back</span></div>
+            <div class="stat"><b>${fmt(d.lapsed.n)}</b><span>lapsed: see Who are we missing?</span></div></div>` : ""),
+          insight: "Attended vs registered-but-didn't-attend needs badge scans. Upload an export with an Attended column to add it." })
+        : pendingCard({ cls: "c6", title: "Returning behaviour", text: "Attended last year, didn't attend last year, registered but didn't attend, new to the show, returned to the show. Returning is detected automatically once an earlier edition is loaded.", needs: ["Previous edition export", "Badge scans"] })}
       ${pendingCard({ cls: "c6", title: "Engagement", text: "Email opens and clicks, website visits, content viewed, conference interest and app engagement, joined to registrants by email.", needs: ["Dotdigital", "GA4", "Show app"] })}
     </div>`;
+  }
+
+  function pacingCard(p) {
+    const id = nid("c");
+    const labels = p.days_out.map(x => x > 0 ? `${x}d` : x === 0 ? "Open" : `Day ${1 - x}`);
+    const openIdx = p.days_out.indexOf(0);
+    mount(id, {
+      type: "line",
+      data: { labels, datasets: [
+        { label: p.current_code, data: p.current, borderColor: css("--s1"), borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, tension: .2, spanGaps: false },
+        { label: p.previous_code, data: p.previous, borderColor: css("--muted"), borderWidth: 2, pointRadius: 0, pointHoverRadius: 5, tension: .2 },
+      ] },
+      options: { maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+        scales: { x: axis({ grid: { display: false }, ticks: { color: css("--muted"), maxTicksLimit: 10, maxRotation: 0 } }),
+                  y: axis({ beginAtZero: true, ticks: { color: css("--muted"), callback: v => fmt(v), maxTicksLimit: 5 } }) },
+        plugins: { marker: { index: openIdx, label: "Show opens" },
+          tooltip: { callbacks: { title: c => { const x = p.days_out[c[0].dataIndex]; return x > 0 ? `${x} days before opening` : x === 0 ? "Opening day" : `Show day ${1 - x}`; },
+                                  label: c => c.raw == null ? null : ` ${c.dataset.label}: ${fmt(c.raw)}` } } } },
+    });
+    const v = p.vs_previous_pct, up = v != null && v >= 0;
+    const when = p.latest_days_out > 0 ? `${p.latest_days_out} days before opening` : "the same point in the show";
+    return card({ cls: "c12", title: `Pacing vs ${esc(p.previous_code)}`, sub: "Cumulative registrations by days before opening, this edition against last",
+      body: `<div class="stat-row" style="margin-bottom:16px">
+          <div class="stat"><b style="color:${up ? "var(--good)" : "var(--s8)"}">${v == null ? "–" : `${up ? "▲" : "▼"} ${Math.abs(v).toFixed(1)}%`}</b><span>${up ? "ahead of" : "behind"} ${esc(p.previous_code)} at ${when}</span></div>
+          <div class="stat"><b>${fmt(p.current_total)}</b><span>${esc(p.current_code)} registrations so far</span></div>
+          <div class="stat"><b>${fmt(p.previous_same_point)}</b><span>${esc(p.previous_code)} at the same point</span></div>
+          <div class="stat"><b>${fmt(p.previous_final)}</b><span>${esc(p.previous_code)} final total</span></div></div>
+        <div class="legend"><span><i style="background:${css("--s1")}"></i>${esc(p.current_code)}</span><span><i style="background:${css("--muted")}"></i>${esc(p.previous_code)}</span></div>
+        <div class="chart-box" style="height:260px"><canvas id="${id}" role="img" aria-label="Pacing against previous edition"></canvas></div>`,
+      table: { rows: p.days_out.map((x, i) => ({ label: labels[i], cur: p.current[i], prev: p.previous[i] })).filter((r, i) => i % 7 === 0 || i === p.days_out.length - 1),
+               cols: [{ key: "label", label: "Days out" }, { key: "cur", label: p.current_code, r: true, fmt }, { key: "prev", label: p.previous_code, r: true, fmt }] } });
   }
 
   function cohortTable(b) {
@@ -552,8 +595,17 @@
 
   /* ------------------------------------------------------------ Gaps */
   function gapsTab(d) {
+    const l = d.lapsed;
+    const lapsedHtml = l ? card({ cls: "c12", title: `${fmt(l.n)} people from ${esc(l.previous_code)} haven't registered this time`,
+        sub: `${pc(l.pct)} of last edition's ${esc(d.meta.segment_label.toLowerCase())}. ${fmt(l.retained)} (${pc(l.retained_pct)}) came back.`,
+        body: `<div class="grid" style="gap:20px">
+          <div class="c4"><div class="sub" style="margin-bottom:8px">Where they're from</div>${hbar(nid("c"), l.countries)}</div>
+          <div class="c4"><div class="sub" style="margin-bottom:8px">Seniority</div>${hbar(nid("c"), l.seniority, { color: css("--s7") })}</div>
+          <div class="c4"><div class="sub" style="margin-bottom:8px">Companies</div>${tableHtml(l.companies, [{ key: "label", label: "Company" }, { key: "n", label: "People", r: true, fmt }])}</div></div>`,
+        insight: "A warm audience that already knows the show. Build a win-back journey before the main campaign, not after." })
+      : pendingCard({ cls: "c12", title: "Lapsed audience", text: "Load the previous edition's registrations and this lists everyone who came last time but hasn't registered this time, with their countries, seniority and companies, ready for a win-back campaign.", needs: ["Previous edition export"] });
     return intro("Who are we missing?", "Where the audience is thin relative to the market, with the question each gap raises. Findings are generated from the live data, so they update as registrations change.")
-    + `<div class="grid">${d.gaps.map(g => `<section class="card c6 gap-card">
+    + `<div class="grid">${lapsedHtml}${d.gaps.map(g => `<section class="card c6 gap-card">
         <div class="gap-type">${esc(g.type)} gap</div><h3>${esc(g.headline)}</h3>
         <div class="gap-rows">${g.rows.map(r => `<div class="gap-row"><span>${esc(r.label)}</span><b>${fmt(r.n)}</b><em>${esc(r.ratio)}</em></div>`).join("")}</div>
         <div class="opportunity"><strong>Opportunity</strong>${esc(g.opportunity)}</div></section>`).join("")}</div>`;
@@ -579,8 +631,20 @@
         <div class="sub" style="margin-top:14px">Top 10 countries</div>
         <div class="chips" style="margin-top:6px">${r.top_countries.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div></section>`;
     };
-    return intro("Compare the three shows", "Our European audience looks like this, North America like this, the Middle East like this. Same definitions, same measures, side by side.")
-      + `<div class="compare-grid">${rows.map(col).join("")}</div>`;
+    const hist = (state.history || []).map(h => {
+      const e = h.editions;
+      const delta = (k, i) => i === 0 || e[i][k] == null || e[i - 1][k] == null ? "" :
+        `<span style="color:${e[i][k] >= e[i - 1][k] ? "var(--good)" : "var(--s8)"};font-size:11.5px;margin-left:6px">${e[i][k] >= e[i - 1][k] ? "▲" : "▼"}${Math.abs(e[i][k] - e[i - 1][k]).toFixed(k === "total" || k === "countries" ? 0 : 1)}</span>`;
+      const row = (label, k, f) => `<tr><td>${label}</td>${e.map((x, i) => `<td class="r">${x[k] == null ? "–" : f(x[k])}${delta(k, i)}</td>`).join("")}</tr>`;
+      return card({ cls: "c12", title: `${esc(h.region)}: year over year`, sub: `${e.length} edition${e.length > 1 ? "s" : ""} loaded`,
+        body: `<div style="overflow-x:auto"><table class="data"><thead><tr><th></th>${e.map(x => `<th class="r">${esc(x.code)}</th>`).join("")}</tr></thead><tbody>
+          ${row("Attendees", "total", fmt)}${row("Countries", "countries", fmt)}${row("Senior level", "senior_pct", pc)}
+          ${row("Buying power", "buying_power_pct", pc)}${row("Buyers", "buyers_pct", pc)}${row("International (outside largest market)", "international_pct", pc)}
+          ${row("Returning", "returning_pct", pc)}${row("Registered in final 7 days", "final7_pct", pc)}</tbody></table></div>` });
+    }).join("");
+    return intro("Compare the three shows", "Our European audience looks like this, North America like this, the Middle East like this. Same definitions, same measures, side by side, and every edition over the years.")
+      + `<div class="compare-grid">${rows.map(col).join("")}</div>`
+      + (hist ? `<div class="grid" style="margin-top:16px">${hist}</div>` : "");
   }
   function bindCompare() { $$("[data-goto-sources]").forEach(b => b.onclick = () => { state.tab = "sources"; renderTab(); }); }
 
@@ -598,16 +662,19 @@
         <div class="level"><h4>Post-show insight report</h4><p>What did we learn? Print this dashboard to PDF after the show and feed it into the next edition's strategy.</p></div></div>` })}
       ${card({ cls: "c6", title: "Update the data", sub: "Upload a new registration export. Re-uploading the same people updates them; nobody is duplicated.",
         body: `<form id="uploadForm" class="form-row">
-          <label>Show<select name="show_code">${state.shows.map(s => `<option value="${s.code}" ${s.code === state.show.code ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
+          <label>Show code<input name="show_code" list="showCodes" value="${esc(state.show.code)}" required pattern="[A-Za-z]{2,6}[0-9]{2}" style="width:130px" title="Brand + 2-digit year, e.g. LEX27"></label>
           <label>Export file (.xlsx / .csv)<input type="file" name="file" accept=".xlsx,.xls,.csv" required></label>
-          <button class="btn" type="submit">Upload</button></form><div class="msg" id="uploadMsg"></div>
+          <button class="btn" type="submit">Upload</button></form>
+          <datalist id="showCodes">${state.shows.map(s => `<option value="${s.code}">${esc(s.name)}</option>`).join("")}</datalist>
+          <div class="msg">Type a new code, such as <b>LEX27</b> or <b>LME27</b>, to start a new edition. It's created automatically and linked to earlier years for returning visitors and pacing.</div>
+          <div class="msg" id="uploadMsg"></div>
           <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--grid)">
             <b style="font-size:13px">Automatic reg pool sync</b>
             <p class="sub" style="margin:4px 0 10px">${auto.length ? `Connected for ${auto.map(esc).join(", ")}. The scheduled job pulls fresh registrations automatically.` : "Not connected yet. Set REGPOOL_&lt;SHOW&gt;_URL (and a token) on Render and the scheduled job pulls registrations automatically, with no manual exports."}</p>
             ${auto.includes(state.show.code) ? `<button class="btn ghost" id="syncBtn">Sync ${esc(state.show.code)} now</button>` : ""}</div>` })}
       ${card({ cls: "c6", title: "Show dates", sub: "Used for the \"final 7 days\" and onsite windows",
         body: `<form method="post" action="/admin/show" class="form-row">
-          <label>Show<select name="code" id="dateShow">${state.shows.map(s => `<option value="${s.code}" ${s.code === state.show.code ? "selected" : ""}>${esc(s.code)}</option>`).join("")}</select></label>
+          <label>Show code<input name="code" id="dateShow" list="showCodes" value="${esc(state.show.code)}" required style="width:110px"></label>
           <label>Opens<input type="date" name="start_date" value="${state.show.start_date || ""}"></label>
           <label>Closes<input type="date" name="end_date" value="${state.show.end_date || ""}"></label>
           <button class="btn ghost" type="submit">Save</button></form>
@@ -632,8 +699,8 @@
         const r = await fetch("/api/ingest/upload", { method: "POST", body: new FormData(form) });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || "Upload failed");
-        msg.textContent = `Done: ${fmt(j.rows)} rows read, ${fmt(j.inserted)} new, ${fmt(j.updated)} updated.`;
-        await boot(form.show_code.value);
+        msg.textContent = `Done: ${fmt(j.rows)} rows read into ${j.show}, ${fmt(j.inserted)} new, ${fmt(j.updated)} updated.`;
+        await boot(j.show);
       } catch (err) { msg.textContent = err.message; }
     };
     const sync = $("#syncBtn");
@@ -643,8 +710,8 @@
       sync.textContent = r.ok ? "Synced" : "Sync failed"; if (r.ok) boot(state.show.code);
     };
     $("#dateShow").onchange = e => {
-      const s = state.shows.find(x => x.code === e.target.value);
-      const f = e.target.form; f.start_date.value = s.start_date || ""; f.end_date.value = s.end_date || "";
+      const s = state.shows.find(x => x.code === e.target.value.trim().toUpperCase());
+      const f = e.target.form; f.start_date.value = s?.start_date || ""; f.end_date.value = s?.end_date || "";
     };
     const runs = await api("/api/ingest/runs");
     $("#runs").innerHTML = runs.length ? tableHtml(runs.slice(0, 6).map(r => ({ ...r, label: r.show })), [
@@ -656,11 +723,12 @@
   /* ------------------------------------------------------------ boot */
   async function load() {
     $("#main").innerHTML = `<div class="loading">Loading insights…</div>`;
-    const [data, compare] = await Promise.all([
+    const seg = state.segment === "exhibitors" ? "exhibitors" : "attendees";
+    const [data, compare, history] = await Promise.all([
       api(`/api/shows/${state.show.code}/summary?segment=${state.segment}`),
-      api(`/api/compare?segment=${state.segment === "exhibitors" ? "exhibitors" : "attendees"}`),
+      api(`/api/compare?segment=${seg}`), api(`/api/history?segment=${seg}`),
     ]);
-    state.data = data; state.compare = compare;
+    state.data = data; state.compare = compare; state.history = history;
     if (!data.meta.has_data) state.segment = "attendees";
     renderRegions(); renderHero(); renderTab();
   }

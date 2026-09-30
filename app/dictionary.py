@@ -277,6 +277,25 @@ def world_region(c):
     return REGION_OF.get(c or "", "Other / unknown") if c else None
 
 
+# Show brands. A show code is BRAND + two-digit year (LEX26, LNA27...). Any code in
+# this form is created automatically the first time data arrives for it.
+BRANDS = {
+    "LEX": ("Lubricant Expo Europe", "Europe"),
+    "LNA": ("Lubricant Expo North America", "North America"),
+    "LME": ("Lubricant Expo Middle East", "Middle East"),
+}
+REGION_ORDER = {"Europe": 0, "North America": 1, "Middle East": 2}
+_SHOW_CODE = re.compile(r"^([A-Z]{2,6})(\d{2})$")
+
+
+def parse_show_code(code):
+    """'LEX27' -> ('LEX', 2027). Raises ValueError for anything else."""
+    m = _SHOW_CODE.match((code or "").strip().upper())
+    if not m:
+        raise ValueError(f"Show code must look like LEX27 (brand + 2-digit year), got {code!r}")
+    return m.group(1), 2000 + int(m.group(2))
+
+
 # Sources the proposal wants joined up. Status is shown on the Data Sources tab.
 DATA_SOURCES = [
     ("Registration platform", "Who registered, profile answers, timing", "connected"),

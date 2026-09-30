@@ -47,16 +47,26 @@ curl -X POST https://<site>/api/ingest/upload \
   -F show_code=LEX26 -F file=@export.xlsx
 ```
 
-## Adding LNA / LME and future years
+## Many shows, many years
 
-Shows are rows in the `shows` table (seeded: LEX26, LNA26, LME26). Upload an export against a show
-and every tab fills in with the same layout. Column names are matched through the **data dictionary**
-(`app/dictionary.py`), so `26_LEM_Annual Budget` and `27_LNA_Annual Budget` both map to *Annual budget*,
-and Visitor / Attendee / Delegate all map to *Attendee*. To support a new source column, add its name to
-`COLUMN_ALIASES`.
+A show is identified by **brand + two-digit year**: `LEX26`, `LNA27`, `LME28`… Brands are listed in
+`dictionary.BRANDS` (add a new one there if the portfolio grows).
 
-Journey, no-show and returning analysis switch on automatically when an export includes `Attended` or
-`Previous attendee` columns (Yes/No).
+- **New editions create themselves.** Upload with a new code on the Data tab, push to the ingest API,
+  or add `REGPOOL_LEX27_URL`, and the show is created on first data. Set its dates on the Data tab
+  (needed for the registration windows and pacing).
+- **Feed the same show as often as you like.** Every load upserts on registration ID, so an hourly sync
+  or repeated uploads never duplicate people.
+- **Editions link up automatically** by brand and year:
+  - *Returning visitors*: registrants whose email appears in any earlier edition of the same brand.
+  - *Pacing*: cumulative registrations by days before opening, against the previous edition.
+  - *Lapsed audience*: registered last edition but not this one (Who are we missing? tab).
+  - *Year over year*: headline measures per edition (Compare shows tab).
+- Load **historical exports** (LEX24, LEX25…) the same way to backfill the trend.
+- Columns are matched through the **data dictionary** (`app/dictionary.py`), so `26_LEM_Annual Budget`
+  and `27_LNA_Annual Budget` both map to *Annual budget*, and Visitor / Attendee / Delegate all map to
+  *Attendee*. To support a new source column, add its name to `COLUMN_ALIASES`.
+- Journey and no-show analysis switch on when an export includes an `Attended` column (Yes/No).
 
 ## Definitions worth knowing
 

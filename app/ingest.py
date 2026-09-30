@@ -6,7 +6,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from . import dictionary as d
-from .db import IngestRun, Registration, SessionLocal
+from .db import IngestRun, Registration, SessionLocal, ensure_show
 
 # Workbook tabs that hold the main registration list. Other tabs in the working
 # file are per-exhibitor lead lists and are skipped.
@@ -86,6 +86,7 @@ def normalise(frame):
 
 def upsert(show_code, rows, source):
     """Insert new registrations and update changed ones, keyed on (show, registration ID)."""
+    show_code = ensure_show(show_code).code
     run = IngestRun(show_code=show_code, source=source, rows_in=len(rows), inserted=0, updated=0,
                     status="ok", started_at=datetime.utcnow())
     now = datetime.utcnow()
