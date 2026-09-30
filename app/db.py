@@ -16,7 +16,35 @@ def _database_url():
     return url
 
 
-engine = create_engine(_database_url(), pool_pre_ping=True, future=True)
+def _fallback_url():
+    # Persistent disk if one is mounted at /var/data, otherwise local file
+    return "sqlite:////var/data/analytics.db" if os.path.isdir("/var/data") else "sqlite:///./analytics.db"
+
+
+def _make_engine():
+    """Use DATABASE_URL, but never fail to boot: if that database is unreachable
+    (e.g. wrong region, deleted, still provisioning after 30s), fall back to SQLite."""
+    import time
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    url = _database_url()
+    if url.startswith("sqlite"):
+        return create_engine(url, future=True)
+    eng = create_engine(url, pool_pre_ping=True, future=True)
+    for attempt in range(6):
+        try:
+            with eng.connect() as c:
+                c.execute(text("select 1"))
+            return eng
+        except OperationalError as exc:
+            print(f"DATABASE_URL not reachable ({exc.orig}); attempt {attempt + 1}/6")
+            time.sleep(5)
+    fb = _fallback_url()
+    print(f"WARNING: falling back to {fb}. Fix or remove DATABASE_URL to use a real database.")
+    return create_engine(fb, future=True)
+
+
+engine = _make_engine()
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
