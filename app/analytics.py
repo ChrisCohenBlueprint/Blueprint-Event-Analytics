@@ -273,12 +273,27 @@ def audience(f):
         "budget_responsibility": dist(f.budget_responsibility, n, order=["Yes", "Influence", "No"]),
         "products": dist(explode(f.products), n, top=18),
         "top_job_titles": dist(f.job_title.map(nice_title), n, top=15),
+        "industry_tree": [{"label": k, "n": int(v), "pct": pct(v, n), "group": d.industry_group(k)}
+                          for k, v in f.industry.value_counts().items()],
+        "function_by_seniority": function_by_seniority(f),
         "new_vs_returning": (dist(f.previous_attendee.map({True: "Returning", False: "New to the show"}), n)
                              if f.previous_attendee.notna().any() else None),
         "companies": {
             "total": int(f.company.dropna().map(d.company_key).nunique()),
             "avg_per_company": round(n / max(1, f.company.dropna().map(d.company_key).nunique()), 2),
         },
+    }
+
+
+def function_by_seniority(f):
+    """Job function x seniority counts for the heatmap (top 10 functions)."""
+    funcs = [x for x in f.job_function.value_counts().index if x != "Other"][:10]
+    levels = [lvl for lvl in d.SENIORITY_ORDER if lvl != "Unclassified"]
+    tab = pd.crosstab(f.job_function, f.seniority)
+    return {
+        "functions": funcs, "levels": levels,
+        "cells": [[int(tab.at[fn, lvl]) if fn in tab.index and lvl in tab.columns else 0 for lvl in levels] for fn in funcs],
+        "totals": [int((f.job_function == fn).sum()) for fn in funcs],
     }
 
 

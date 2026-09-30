@@ -274,6 +274,107 @@
       <button class="btn" onclick="document.querySelector('[data-tab=sources]').click()">Go to Data &amp; sources</button></div>`;
   }
 
+
+  /* ------------------------------------------------------------ extra chart types */
+  const lum = hex => {
+    const h = hex.replace("#", ""); if (h.length < 6) return 1;
+    const [r, g, b] = [0, 2, 4].map(i => { const c = parseInt(h.substr(i, 2), 16) / 255; return c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; });
+    return .2126 * r + .7152 * g + .0722 * b;
+  };
+  const inkOn = bg => lum(bg) > .32 ? "#0b0b0b" : "#ffffff";
+
+  // Donut: part-to-whole for 2-3 parts, headline figure in the centre.
+  function donut(items, colors, centreLabel, highlight) {
+    const id = nid("c");
+    const total = items.reduce((a, b) => a + b.n, 0) || 1;
+    const keys = [].concat(highlight);
+    const centre = items.filter(i => keys.includes(i.label)).reduce((a, b) => a + b.pct, 0);
+    mount(id, {
+      type: "doughnut",
+      data: { labels: items.map(i => i.label), datasets: [{ data: items.map(i => i.n), backgroundColor: colors,
+        borderColor: css("--surface"), borderWidth: 2, hoverOffset: 4, borderRadius: 3 }] },
+      options: { cutout: "72%", maintainAspectRatio: false, plugins: {
+        tooltip: { callbacks: { label: c => ` ${c.label}: ${fmt(c.raw)} · ${pc(items[c.dataIndex].pct)}` } } } },
+    });
+    const legend = items.map((it, i) => `<div class="split-l"><i style="background:${colors[i]}"></i><span>${esc(it.label)}</span><b>${pc(it.pct)}</b><em>${fmt(it.n)}</em></div>`).join("");
+    return `<div class="donut-wrap"><div class="donut"><canvas id="${id}" role="img" aria-label="Donut chart"></canvas>
+      <div class="donut-centre"><b>${Math.round(centre)}%</b><span>${esc(centreLabel)}</span></div></div>
+      <div class="split-legend">${legend}</div></div>`;
+  }
+
+  // Waffle: 100 squares, ordinal ramp (seniority is ordered).
+  function waffle(items) {
+    const ramp = ["--seq-7", "--seq-6", "--seq-5", "--seq-4", "--seq-3"].map(css);
+    const colors = items.map((it, i) => it.label === "Unclassified" ? css("--axis") : ramp[i] || ramp[ramp.length - 1]);
+    const total = items.reduce((a, b) => a + b.n, 0) || 1;
+    const raw = items.map(i => 100 * i.n / total);
+    const cells = raw.map(Math.floor);
+    raw.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0])
+      .slice(0, 100 - cells.reduce((a, b) => a + b, 0)).forEach(([, i]) => cells[i]++);
+    const squares = cells.flatMap((c, i) => Array.from({ length: c }, () =>
+      `<span style="background:${colors[i]}" title="${esc(items[i].label)}: ${pc(items[i].pct)}"></span>`)).join("");
+    const legend = items.map((it, i) => `<div class="split-l"><i style="background:${colors[i]}"></i><span>${esc(it.label)}</span><b>${pc(it.pct)}</b><em>${fmt(it.n)}</em></div>`).join("");
+    return `<div class="waffle-wrap"><div class="waffle">${squares}</div><div class="split-legend">${legend}</div></div>`;
+  }
+
+  // Heatmap: job function (rows) x seniority (columns), shaded by row share.
+  function heatmap(h) {
+    const ramp = ["--seq-1", "--seq-2", "--seq-3", "--seq-4", "--seq-5", "--seq-6", "--seq-7"].map(css);
+    const short = { "Executive / Owner": "Exec / Owner", "Director / VP / Head": "Director / VP", "Student / Academic": "Student" };
+    const rows = h.functions.map((fn, r) => {
+      const tot = h.totals[r] || 1;
+      return `<tr><th scope="row" title="${esc(fn)}">${esc(fn.length > 28 ? fn.slice(0, 26) + "…" : fn)}</th>${h.cells[r].map((v, c) => {
+        const share = 100 * v / tot;
+        const bg = share < 1 ? css("--surface-2") : ramp[Math.min(6, Math.floor(share / 12))];
+        return `<td style="background:${bg};color:${share < 1 ? css("--muted") : inkOn(bg)}" title="${esc(fn)} · ${esc(h.levels[c])}: ${fmt(v)} people (${pc(share)} of the function)">${share < 1 ? "·" : Math.round(share) + "%"}</td>`;
+      }).join("")}<td class="heat-n">${fmt(h.totals[r])}</td></tr>`;
+    }).join("");
+    return `<div style="overflow-x:auto"><table class="heatmap"><thead><tr><th></th>${h.levels.map(l => `<th>${esc(short[l] || l)}</th>`).join("")}<th class="heat-n">People</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  function heatInsight(h) {
+    const i = h.functions.findIndex(f => f.startsWith("Purchasing"));
+    if (i < 0) return "";
+    const senior = h.cells[i][0] + h.cells[i][1];
+    return `Only ${pc(100 * senior / Math.max(1, h.totals[i]))} of procurement attendees are Director level or above. Senior buyers are a clear gap to target.`;
+  }
+
+  // Treemap (D3): industries sized by people, coloured by industry group.
+  function treemap(items) {
+    const id = nid("tm");
+    const groups = { "Lubricant supply chain": css("--s1"), "End-user industry": css("--s2"), "Services & other": css("--s3") };
+    state.after.push(() => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const w = Math.floor(el.getBoundingClientRect().width), h = 360;
+      const root = d3.hierarchy({ children: items }).sum(x => x.n || 0).sort((a, b) => b.value - a.value);
+      d3.treemap().size([w, h]).paddingInner(2).round(true)(root);
+      const tip = $("#mapTip");
+      el.innerHTML = root.leaves().map(l => {
+        const bw = l.x1 - l.x0, bh = l.y1 - l.y0, c = groups[l.data.group] || css("--axis");
+        const label = bw > 96 && bh > 46 ? `<b>${esc(l.data.label)}</b><span>${fmt(l.data.n)} · ${pc(l.data.pct)}</span>` : "";
+        return `<div class="tm-cell" data-l="${esc(l.data.label)}" data-n="${l.data.n}" data-p="${l.data.pct}" data-g="${esc(l.data.group || "")}"
+          style="left:${l.x0}px;top:${l.y0}px;width:${bw}px;height:${bh}px;background:color-mix(in srgb, ${c} 26%, var(--surface));box-shadow:inset 3px 0 0 ${c}">${label}</div>`;
+      }).join("");
+      el.style.height = h + "px";
+      $$(".tm-cell", el).forEach(n => {
+        n.onmousemove = ev => { tip.innerHTML = `<b>${esc(n.dataset.l)}</b> · ${fmt(n.dataset.n)} people · ${pc(+n.dataset.p)}<br><span style="opacity:.75">${esc(n.dataset.g)}</span>`;
+          tip.style.left = ev.clientX + 12 + "px"; tip.style.top = ev.clientY + 12 + "px"; tip.style.opacity = 1; };
+        n.onmouseleave = () => { tip.style.opacity = 0; };
+      });
+    });
+    const legend = Object.entries(groups).map(([g, c]) => `<span><i style="background:${c}"></i>${g}</span>`).join("");
+    return `<div class="legend">${legend}</div><div class="treemap" id="${id}"></div>`;
+  }
+
+  // Lollipop: thin stem + dot, lighter than a wall of bars.
+  function lollipop(items) {
+    const max = Math.max(...items.map(i => i.pct), 1);
+    return `<div class="lolli">${items.map(i => `<div class="lolli-row" title="${esc(i.label)}: ${fmt(i.n)} people">
+      <span class="lolli-l">${esc(i.label)}</span>
+      <span class="lolli-t"><span class="lolli-s" style="width:${(100 * i.pct / max).toFixed(1)}%"></span></span>
+      <b>${pc(i.pct)}</b></div>`).join("")}</div>`;
+  }
+
   /* ------------------------------------------------------------ Audience */
   function audienceTab(d) {
     const a = d.audience, mix = d.mix, k = d.kpis;
@@ -289,25 +390,26 @@
           <div style="margin-top:14px">${split(mix.attendee_types.map(t => ({ label: t.label, n: t.n })))}</div>`,
         insight: `1 exhibitor registration for every ${mix.attendees_per_exhibitor} attendees. Exhibitors equal ${pc(mix.exhibitor_pct_of_attendees)} of the attendee count.` })}
       ${card({ cls: "c4", title: "Buyer vs supplier", sub: "Self-declared business opportunity",
-        body: split(a.buyer_supplier), table: { rows: a.buyer_supplier },
+        body: donut(a.buyer_supplier, [css("--s1"), css("--s2")], "buyers", "Buyer"), table: { rows: a.buyer_supplier },
         insight: `${pc(k.buyers_pct)} came to buy. Suppliers attend to meet their own customers.` })}
       ${card({ cls: "c4", title: "Purchasing influence", sub: "Budgetary responsibility",
-        body: split(a.budget_responsibility, [css("--s1"), css("--s3"), css("--axis")]), table: { rows: a.budget_responsibility },
+        body: donut(a.budget_responsibility, [css("--s1"), css("--s3"), css("--axis")], "hold or influence", ["Yes", "Influence"]), table: { rows: a.budget_responsibility },
         insight: `${pc(k.buying_power_pct)} hold or influence a budget, so more than 7 in 10 have a say in purchasing.` })}
 
-      ${card({ cls: "c6", title: "Seniority", sub: "Derived from job title using the standard seniority bands",
-        body: hbar(nid("c"), a.seniority, { colors: a.seniority.map(x => ["Executive / Owner", "Director / VP / Head"].includes(x.label) ? css("--s1") : css("--seq-2")) }),
-        table: { rows: a.seniority },
+      ${card({ cls: "c5", title: "Seniority", sub: "Each square is 1% of the audience, darkest = most senior",
+        body: waffle(a.seniority), table: { rows: a.seniority },
         insight: `${pc(senPct)} are Director level or above, roughly 1 in ${Math.round(100 / Math.max(1, senPct))} attendees. A strong story for exhibitors and sponsors.` })}
-      ${card({ cls: "c6", title: "Job function", sub: "Standard function picklist",
-        body: hbar(nid("c"), a.job_function), table: { rows: a.job_function } })}
+      ${card({ cls: "c7", title: "Job function × seniority", sub: "Share of each function at each level. Darker = more of that function sits there.",
+        body: heatmap(a.function_by_seniority),
+        table: { rows: a.job_function },
+        insight: heatInsight(a.function_by_seniority) })}
 
-      ${card({ cls: "c7", title: "Key industries", sub: "Main business activity, top 15",
-        body: hbar(nid("c"), a.industry), table: { rows: a.industry },
-        insight: `${esc(topInd.label)} is the largest single industry at ${pc(topInd.pct)}.` })}
-      ${card({ cls: "c5", title: "Industry group", sub: "Supply chain vs the end users who buy lubricants",
-        body: split(a.industry_group, [css("--s1"), css("--s2"), css("--axis")]) + `<div style="margin-top:18px">${hbar(nid("c"), a.products.slice(0, 10), { color: css("--s3") })}</div>`,
-        table: { rows: a.products }, insight: `Top product interest: ${esc(topProd.label)} (${pc(topProd.pct)} of the audience). Each person can pick several products.` })}
+      ${card({ cls: "c7", title: "Key industries", sub: "Main business activity. Box size = people, colour = industry group",
+        body: treemap(a.industry_tree), table: { rows: a.industry },
+        insight: `${esc(topInd.label)} is the largest single industry at ${pc(topInd.pct)}. End-user industries, the buyers of lubricants, are the orange boxes.` })}
+      ${card({ cls: "c5", title: "Product interests", sub: "Share of the audience interested in each product. People can pick several.",
+        body: lollipop(a.products.filter(p => p.label !== "All others").slice(0, 14)),
+        table: { rows: a.products }, insight: `Top interest: ${esc(topProd.label)} (${pc(topProd.pct)}). Use the product mix to plan content streams and exhibitor recruitment.` })}
 
       ${card({ cls: "c7", title: "Most common job titles", sub: "As typed at registration",
         body: tableHtml(a.top_job_titles, [{ key: "label", label: "Title" }, { key: "n", label: "People", bar: true }, { key: "pct", label: "Share", r: true, fmt: pc }]) })}
