@@ -95,7 +95,7 @@ class Registration(Base):
     attended: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     previous_attendee: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     source_channel: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -1,5 +1,8 @@
 """Turn a registration export (XLSX / CSV / list of dicts) into canonical rows and upsert them."""
+import hashlib
+import hmac
 import io
+import os
 from datetime import datetime
 
 import pandas as pd
@@ -27,6 +30,20 @@ def read_file(filename, content):
     raise ValueError("Upload an .xlsx or .csv export")
 
 
+# Data minimisation: only what the dashboard needs is stored. Names, phone numbers,
+# cities and any unmapped columns are discarded at upload, and emails are kept only as
+# a keyed one-way hash - enough to recognise the same person across editions
+# (returning / lapsed), never enough to recover the address.
+_EMAIL_KEY = os.environ.get("EMAIL_HASH_KEY", "lubricant-expo-insights").encode()
+
+
+def email_hash(email):
+    e = d.clean(email)
+    if not e:
+        return None
+    return hmac.new(_EMAIL_KEY, e.lower().encode(), hashlib.sha256).hexdigest()
+
+
 def normalise(frame):
     """Map raw columns onto the data dictionary. Returns list of dicts."""
     mapping, extras = {}, []
@@ -51,19 +68,17 @@ def normalise(frame):
         reg_type = d.clean(raw.get("reg_type_raw"))
         country = d.country(raw.get("country"))
         industry = d.clean(raw.get("industry"))
-        email = d.clean(raw.get("email"))
-        extra = {c: d.clean(rec[c]) for c in extras if d.clean(rec[c]) is not None}
         rows.append(dict(
             source_id=sid,
             created_at=created,
             reg_type_raw=reg_type,
             category=d.category(reg_type),
-            first_name=d.clean(raw.get("first_name")),
-            last_name=d.clean(raw.get("last_name")),
+            first_name=None,
+            last_name=None,
             company=d.clean(raw.get("company")),
-            email=email.lower() if email else None,
-            city=d.clean(raw.get("city")),
-            state=d.clean(raw.get("state")),
+            email=email_hash(raw.get("email")),
+            city=None,
+            state=None,
             country=country,
             world_region=d.world_region(country),
             job_title=d.clean(raw.get("job_title")),
@@ -79,7 +94,7 @@ def normalise(frame):
             attended=d.yes_no(raw.get("attended")),
             previous_attendee=d.yes_no(raw.get("previous_attendee")),
             source_channel=d.clean(raw.get("source_channel")),
-            extra=extra or None,
+            extra=None,
         ))
     return rows
 

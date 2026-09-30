@@ -23,6 +23,10 @@ _COLS = ["source_id", "created_at", "reg_type_raw", "category", "company", "emai
 
 _cache = {}
 
+# Company lists only show companies with at least this many people, so a small segment
+# (e.g. a single speaker from a named company) can't point to an individual.
+MIN_GROUP = 3
+
 
 def invalidate(show_code=None):
     for k in list(_cache):
@@ -222,7 +226,7 @@ def lapsed(full, prev_f, prev_show):
         "countries": dist(lost.country, k, top=10),
         "seniority": dist(lost.seniority, k, order=d.SENIORITY_ORDER),
         "job_function": dist(lost.job_function, k, top=8),
-        "companies": dist(lost.company.map(lambda c: c if isinstance(c, str) else None), k, top=12),
+        "companies": [c for c in dist(lost.company, k) if c["n"] >= MIN_GROUP][:12],
     }
 
 
@@ -272,7 +276,7 @@ def audience(f):
         "buyer_supplier": dist(f.buyer_supplier, n),
         "budget_responsibility": dist(f.budget_responsibility, n, order=["Yes", "Influence", "No"]),
         "products": dist(explode(f.products), n, top=18),
-        "top_job_titles": dist(f.job_title.map(nice_title), n, top=15),
+        "top_job_titles": [t for t in dist(f.job_title.map(nice_title), n) if t["n"] >= MIN_GROUP][:15],
         "industry_tree": [{"label": k, "n": int(v), "pct": pct(v, n), "group": d.industry_group(k)}
                           for k, v in f.industry.value_counts().items()],
         "function_by_seniority": function_by_seniority(f),
@@ -430,7 +434,7 @@ def commercial(f):
     top_companies = (grp.agg(company=("company", "first"), n=("source_id", "size"),
                              senior=("seniority", lambda s: int(s.isin(d.SENIOR_LEVELS).sum())),
                              country=("country", lambda s: s.mode().iat[0] if s.notna().any() else None))
-                     .sort_values("n", ascending=False).head(20))
+                     .query(f"n >= {MIN_GROUP}").sort_values("n", ascending=False).head(20))
     size_dist = grp.size().pipe(lambda s: pd.cut(s, [0, 1, 2, 5, 10, 10_000],
                                                  labels=["1 person", "2", "3-5", "6-10", "11+"]))
     sen_x_bs = []
@@ -477,7 +481,7 @@ def journey(f):
             "countries": dist(ns.country, k, top=10),
             "seniority": dist(ns.seniority, k, order=d.SENIORITY_ORDER),
             "job_function": dist(ns.job_function, k, top=8),
-            "companies": dist(ns.company, k, top=15),
+            "companies": [c for c in dist(ns.company, k) if c["n"] >= MIN_GROUP][:15],
         }
     return {"stages": stages, "no_show": no_show}
 
