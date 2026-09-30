@@ -29,6 +29,33 @@ INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 @app.on_event("startup")
 def _startup():
     init_db()
+    _start_scheduler()
+
+
+def _start_scheduler():
+    """Pull from the reg pool on a timer inside the web service - no separate cron job needed.
+    Runs only when at least one REGPOOL_<SHOW>_URL is set. Interval: SYNC_INTERVAL_MINUTES (default 60)."""
+    import threading
+    import time
+    if not regpool.configured_shows():
+        return
+    interval = max(5, int(os.environ.get("SYNC_INTERVAL_MINUTES", "60"))) * 60
+
+    def loop():
+        while True:
+            for code in regpool.configured_shows():
+                try:
+                    run = regpool.sync(code)
+                    print(f"[sync] {code}: {run.inserted} new, {run.updated} updated")
+                except Exception as exc:
+                    print(f"[sync] {code} failed: {exc}")
+                    with SessionLocal() as s:
+                        s.add(IngestRun(show_code=code, source="regpool", status="error", message=str(exc)[:2000]))
+                        s.commit()
+            analytics.invalidate()
+            time.sleep(interval)
+
+    threading.Thread(target=loop, daemon=True, name="regpool-sync").start()
 
 
 # The data is personal (names, emails), so the whole site sits behind a login

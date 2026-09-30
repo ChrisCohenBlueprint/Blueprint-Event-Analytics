@@ -18,19 +18,35 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
 Locally it uses SQLite (`analytics.db`) and has no login. Registration exports contain personal data,
 so `.xlsx` / `.csv` files and the database are git-ignored.
 
-## Deploy to Render
+## Deploy to Render (single Web Service)
 
-1. Push this folder to a private GitHub repo.
-2. In Render, go to **New → Blueprint** and pick the repo. `render.yaml` creates:
-   - `customer-insights`: the web dashboard (password-protected)
-   - `insights-db`: Postgres
-   - `customer-insights-sync`: an hourly cron job that pulls from the reg pool
-3. Set `DASHBOARD_PASSWORD` when prompted. The username is `blueprint`.
-4. Open the site, go to **Data & sources**, and upload the current export to seed it.
+One Render **Web Service** with a persistent **Disk**. No separate database or cron job.
+
+| Setting | Value |
+|---|---|
+| Runtime | Python 3 |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| Instance type | Starter (needed for a Disk) |
+| Disk | Mount path `/var/data`, 1 GB |
+| Health check path | `/healthz` |
+
+Environment variables:
+
+| Key | Value |
+|---|---|
+| `PYTHON_VERSION` | `3.12.8` |
+| `DATABASE_URL` | `sqlite:////var/data/analytics.db` |
+| `DASHBOARD_USER` | `blueprint` |
+| `DASHBOARD_PASSWORD` | your choice |
+| `INGEST_TOKEN` | any long random string (for API pushes) |
+
+Then open the site, go to **Data & sources**, and upload the current export. (A Postgres `DATABASE_URL` also
+works if you ever outgrow the disk.)
 
 ## Automating updates from the reg pool
 
-Each show gets its own pair of environment variables on the web service **and** the cron job:
+Each show gets its own pair of environment variables on the web service:
 
 | Variable | Example |
 |---|---|
@@ -38,7 +54,8 @@ Each show gets its own pair of environment variables on the web service **and** 
 | `REGPOOL_LEX26_TOKEN` | API key (sent as `Authorization: Bearer …`) |
 | `REGPOOL_AUTH_HEADER` | optional, e.g. `X-Api-Key` if the platform uses a different header |
 
-The cron job (`python -m app.sync`) upserts on registration ID. New people are added and changed
+With any `REGPOOL_*_URL` set, the web service pulls every hour by itself
+(`SYNC_INTERVAL_MINUTES` to change it, e.g. 15 during show build-up). Each pull upserts on registration ID. New people are added and changed
 people are updated, with no duplicates. Other systems can push instead of being pulled:
 
 ```bash
