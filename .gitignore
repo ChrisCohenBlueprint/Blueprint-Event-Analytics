@@ -1,0 +1,13 @@
+# Registration exports contain personal data - never commit them
+Content/*.xlsx
+Content/*.csv
+*.xlsx
+*.csv
+*.db
+__pycache__/
+.venv/
+.env
+.DS_Store
+
+# Internal source documents stay local
+Content/
